@@ -6,6 +6,7 @@ import { Trip, Expense } from "@/types";
 
 interface PageProps {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ mode?: string }>;
 }
 
 async function getTrip(id: string): Promise<Trip | null> {
@@ -24,35 +25,147 @@ async function getExpenses(tripId: string): Promise<Expense[]> {
     .toArray();
 }
 
-function computeBalances(
+interface Settlement {
+  from: string;
+  to: string;
+  amount: number;
+}
+
+function toCents(amount: number): number {
+  return Math.round(amount * 100);
+}
+
+function computeSettlements(
   expenses: Expense[],
   participants: string[]
-): Map<string, Map<string, number>> {
-  // owes[debtor][creditor] = amount
-  const owes = new Map<string, Map<string, number>>();
-  for (const p of participants) owes.set(p, new Map());
+): Settlement[] {
+  const netByParticipant = new Map<string, number>();
+  for (const participant of participants) {
+    netByParticipant.set(participant, 0);
+  }
+
+  const addNet = (person: string, deltaCents: number) => {
+    netByParticipant.set(
+      person,
+      (netByParticipant.get(person) ?? 0) + deltaCents
+    );
+  };
 
   for (const expense of expenses) {
     if (expense.splitAmong.length === 0) continue;
-    const share = expense.amount / expense.splitAmong.length;
-    for (const person of expense.splitAmong) {
-      if (person === expense.paidBy) continue;
-      const personOwes = owes.get(person) ?? new Map<string, number>();
-      const current = personOwes.get(expense.paidBy) ?? 0;
-      personOwes.set(expense.paidBy, current + share);
-      owes.set(person, personOwes);
+
+    const totalCents = toCents(expense.amount);
+    const splitCount = expense.splitAmong.length;
+    const baseShare = Math.floor(totalCents / splitCount);
+    const remainder = totalCents - baseShare * splitCount;
+
+    addNet(expense.paidBy, totalCents);
+
+    for (let index = 0; index < splitCount; index += 1) {
+      const person = expense.splitAmong[index];
+      const extraCent = index < remainder ? 1 : 0;
+      addNet(person, -(baseShare + extraCent));
     }
   }
-  return owes;
+
+  const debtors = Array.from(netByParticipant.entries())
+    .filter(([, cents]) => cents < 0)
+    .map(([person, cents]) => ({ person, cents: -cents }));
+
+  const creditors = Array.from(netByParticipant.entries())
+    .filter(([, cents]) => cents > 0)
+    .map(([person, cents]) => ({ person, cents }));
+
+  const settlements: Settlement[] = [];
+
+  while (debtors.length > 0 && creditors.length > 0) {
+    debtors.sort((a, b) => b.cents - a.cents);
+    creditors.sort((a, b) => b.cents - a.cents);
+
+    const topDebtor = debtors[0];
+    const topCreditor = creditors[0];
+    const transferCents = Math.min(topDebtor.cents, topCreditor.cents);
+
+    settlements.push({
+      from: topDebtor.person,
+      to: topCreditor.person,
+      amount: transferCents / 100,
+    });
+
+    topDebtor.cents -= transferCents;
+    topCreditor.cents -= transferCents;
+
+    if (topDebtor.cents === 0) debtors.shift();
+    if (topCreditor.cents === 0) creditors.shift();
+  }
+
+  return settlements;
 }
 
-export default async function TripPage({ params }: PageProps) {
+function computePairwiseSettlements(
+  expenses: Expense[],
+  participants: string[]
+): Settlement[] {
+  const owes = new Map<string, Map<string, number>>();
+  for (const participant of participants) {
+    owes.set(participant, new Map());
+  }
+
+  const addOwe = (debtor: string, creditor: string, cents: number) => {
+    const debtorMap = owes.get(debtor) ?? new Map<string, number>();
+    debtorMap.set(creditor, (debtorMap.get(creditor) ?? 0) + cents);
+    owes.set(debtor, debtorMap);
+  };
+
+  for (const expense of expenses) {
+    if (expense.splitAmong.length === 0) continue;
+
+    const totalCents = toCents(expense.amount);
+    const splitCount = expense.splitAmong.length;
+    const baseShare = Math.floor(totalCents / splitCount);
+    const remainder = totalCents - baseShare * splitCount;
+
+    for (let index = 0; index < splitCount; index += 1) {
+      const person = expense.splitAmong[index];
+      const extraCent = index < remainder ? 1 : 0;
+      if (person === expense.paidBy) continue;
+      addOwe(person, expense.paidBy, baseShare + extraCent);
+    }
+  }
+
+  const settlements: Settlement[] = [];
+  for (let i = 0; i < participants.length; i += 1) {
+    for (let j = i + 1; j < participants.length; j += 1) {
+      const a = participants[i];
+      const b = participants[j];
+      const aOwesB = owes.get(a)?.get(b) ?? 0;
+      const bOwesA = owes.get(b)?.get(a) ?? 0;
+
+      if (aOwesB > bOwesA) {
+        settlements.push({ from: a, to: b, amount: (aOwesB - bOwesA) / 100 });
+      } else if (bOwesA > aOwesB) {
+        settlements.push({ from: b, to: a, amount: (bOwesA - aOwesB) / 100 });
+      }
+    }
+  }
+
+  return settlements;
+}
+
+export default async function TripPage({ params, searchParams }: PageProps) {
   const { id } = await params;
+  const { mode } = await searchParams;
+  const balanceMode =
+    mode === "pairwise" || mode === "compare" ? mode : "global";
   const [trip, expenses] = await Promise.all([getTrip(id), getExpenses(id)]);
 
   if (!trip) notFound();
 
-  const balances = computeBalances(expenses, trip.participants);
+  const simplifiedSettlements = computeSettlements(expenses, trip.participants);
+  const pairwiseSettlements = computePairwiseSettlements(
+    expenses,
+    trip.participants
+  );
   const totalAmount = expenses.reduce((sum, e) => sum + e.amount, 0);
 
   return (
@@ -105,9 +218,17 @@ export default async function TripPage({ params }: PageProps) {
                     <span className="font-medium text-zinc-900 dark:text-zinc-50">
                       {expense.description}
                     </span>
-                    <span className="font-semibold text-zinc-800 dark:text-zinc-100">
-                      {expense.currency} {expense.amount.toFixed(2)}
-                    </span>
+                    <div className="flex items-center gap-3">
+                      <span className="font-semibold text-zinc-800 dark:text-zinc-100">
+                        {expense.currency} {expense.amount.toFixed(2)}
+                      </span>
+                      <Link
+                        href={`/trips/${id}/expenses/${String(expense._id)}/edit`}
+                        className="text-xs font-medium text-zinc-500 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors"
+                      >
+                        Edit
+                      </Link>
+                    </div>
                   </div>
                   <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
                     Paid by <strong>{expense.paidBy}</strong> · Split among{" "}
@@ -155,29 +276,131 @@ export default async function TripPage({ params }: PageProps) {
             <h3 className="font-semibold text-zinc-800 dark:text-zinc-100 mb-3">
               Balances
             </h3>
-            {Array.from(balances.entries()).every(
-              ([, creditors]) => creditors.size === 0
-            ) ? (
+            <div className="mb-4 flex flex-wrap gap-2">
+              <Link
+                href={`/trips/${id}?mode=global`}
+                className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                  balanceMode === "global"
+                    ? "bg-zinc-900 text-white dark:bg-zinc-50 dark:text-zinc-900"
+                    : "bg-zinc-100 text-zinc-600 dark:bg-zinc-700 dark:text-zinc-300"
+                }`}
+              >
+                Global Simplified
+              </Link>
+              <Link
+                href={`/trips/${id}?mode=pairwise`}
+                className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                  balanceMode === "pairwise"
+                    ? "bg-zinc-900 text-white dark:bg-zinc-50 dark:text-zinc-900"
+                    : "bg-zinc-100 text-zinc-600 dark:bg-zinc-700 dark:text-zinc-300"
+                }`}
+              >
+                Pair-wise Netting
+              </Link>
+              <Link
+                href={`/trips/${id}?mode=compare`}
+                className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                  balanceMode === "compare"
+                    ? "bg-zinc-900 text-white dark:bg-zinc-50 dark:text-zinc-900"
+                    : "bg-zinc-100 text-zinc-600 dark:bg-zinc-700 dark:text-zinc-300"
+                }`}
+              >
+                Compare
+              </Link>
+            </div>
+
+            {simplifiedSettlements.length === 0 && pairwiseSettlements.length === 0 ? (
               <p className="text-sm text-zinc-500 dark:text-zinc-400">
                 All settled up!
               </p>
+            ) : balanceMode === "global" ? (
+              simplifiedSettlements.length === 0 ? (
+                <p className="text-sm text-zinc-500 dark:text-zinc-400">
+                  All settled up.
+                </p>
+              ) : (
+                <ul className="flex flex-col gap-2">
+                  {simplifiedSettlements.map((settlement, index) => (
+                    <li
+                      key={`global-${settlement.from}-${settlement.to}-${index}`}
+                      className="text-sm text-zinc-700 dark:text-zinc-300"
+                    >
+                      <strong>{settlement.from}</strong> owes{" "}
+                      <strong>{settlement.to}</strong>{" "}
+                      {expenses[0]?.currency ?? ""} {settlement.amount.toFixed(2)}
+                    </li>
+                  ))}
+                </ul>
+              )
+            ) : balanceMode === "pairwise" ? (
+              pairwiseSettlements.length === 0 ? (
+                <p className="text-sm text-zinc-500 dark:text-zinc-400">
+                  All settled up.
+                </p>
+              ) : (
+                <ul className="flex flex-col gap-2">
+                  {pairwiseSettlements.map((settlement, index) => (
+                    <li
+                      key={`pair-${settlement.from}-${settlement.to}-${index}`}
+                      className="text-sm text-zinc-700 dark:text-zinc-300"
+                    >
+                      <strong>{settlement.from}</strong> owes{" "}
+                      <strong>{settlement.to}</strong>{" "}
+                      {expenses[0]?.currency ?? ""} {settlement.amount.toFixed(2)}
+                    </li>
+                  ))}
+                </ul>
+              )
             ) : (
-              <ul className="flex flex-col gap-2">
-                {Array.from(balances.entries()).map(([debtor, creditors]) =>
-                  Array.from(creditors.entries()).map(([creditor, amount]) =>
-                    amount > 0.005 ? (
-                      <li
-                        key={`${debtor}-${creditor}`}
-                        className="text-sm text-zinc-700 dark:text-zinc-300"
-                      >
-                        <strong>{debtor}</strong> owes{" "}
-                        <strong>{creditor}</strong>{" "}
-                        {expenses[0]?.currency ?? ""} {amount.toFixed(2)}
-                      </li>
-                    ) : null
-                  )
-                )}
-              </ul>
+              <div className="grid gap-4">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400 mb-2">
+                    Global Simplified
+                  </p>
+                  {simplifiedSettlements.length === 0 ? (
+                    <p className="text-sm text-zinc-500 dark:text-zinc-400">
+                      All settled up.
+                    </p>
+                  ) : (
+                    <ul className="flex flex-col gap-2">
+                      {simplifiedSettlements.map((settlement, index) => (
+                        <li
+                          key={`global-${settlement.from}-${settlement.to}-${index}`}
+                          className="text-sm text-zinc-700 dark:text-zinc-300"
+                        >
+                          <strong>{settlement.from}</strong> owes{" "}
+                          <strong>{settlement.to}</strong>{" "}
+                          {expenses[0]?.currency ?? ""} {settlement.amount.toFixed(2)}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+
+                <div className="pt-3 border-t border-zinc-200 dark:border-zinc-700">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400 mb-2">
+                    Pair-wise Netting
+                  </p>
+                  {pairwiseSettlements.length === 0 ? (
+                    <p className="text-sm text-zinc-500 dark:text-zinc-400">
+                      All settled up.
+                    </p>
+                  ) : (
+                    <ul className="flex flex-col gap-2">
+                      {pairwiseSettlements.map((settlement, index) => (
+                        <li
+                          key={`pair-${settlement.from}-${settlement.to}-${index}`}
+                          className="text-sm text-zinc-700 dark:text-zinc-300"
+                        >
+                          <strong>{settlement.from}</strong> owes{" "}
+                          <strong>{settlement.to}</strong>{" "}
+                          {expenses[0]?.currency ?? ""} {settlement.amount.toFixed(2)}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </div>
             )}
           </div>
         </aside>
