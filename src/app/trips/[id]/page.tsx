@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 import { ObjectId } from "mongodb";
 import { getDb } from "@/lib/mongodb";
 import { Trip, Expense, ExpenseSplitShare } from "@/types";
+import ExpenseCharts, { ChartEntry } from "@/components/expense-charts";
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -238,6 +239,23 @@ export default async function TripPage({ params, searchParams }: PageProps) {
   );
   const totalAmount = expenses.reduce((sum, e) => sum + e.amount, 0);
 
+  const byParticipantMap = new Map<string, number>();
+  const byCategoryMap = new Map<string, number>();
+  for (const expense of expenses) {
+    byParticipantMap.set(
+      expense.paidBy,
+      (byParticipantMap.get(expense.paidBy) ?? 0) + expense.amount
+    );
+    const cat = expense.category?.trim() || "Sem categoria";
+    byCategoryMap.set(cat, (byCategoryMap.get(cat) ?? 0) + expense.amount);
+  }
+  const byParticipant: ChartEntry[] = Array.from(byParticipantMap.entries())
+    .map(([name, total]) => ({ name, total }))
+    .sort((a, b) => b.total - a.total);
+  const byCategory: ChartEntry[] = Array.from(byCategoryMap.entries())
+    .map(([name, total]) => ({ name, total }))
+    .sort((a, b) => b.total - a.total);
+
   return (
     <div className="min-h-screen bg-zinc-50 dark:bg-zinc-900 font-sans">
       <header className="bg-white dark:bg-zinc-800 border-b border-zinc-200 dark:border-zinc-700 px-6 py-4">
@@ -272,6 +290,13 @@ export default async function TripPage({ params, searchParams }: PageProps) {
               + Add Expense
             </Link>
           </div>
+
+          {expenses.length > 0 && (
+            <ExpenseCharts
+              byParticipant={byParticipant}
+              byCategory={byCategory}
+            />
+          )}
 
           {expenses.length === 0 ? (
             <div className="rounded-xl border border-dashed border-zinc-300 dark:border-zinc-600 p-10 text-center text-zinc-500 dark:text-zinc-400">
