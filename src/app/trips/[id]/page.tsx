@@ -12,8 +12,41 @@ interface PageProps {
     mode?: string;
     participant?: string | string[];
     category?: string | string[];
+    sort?: string | string[];
   }>;
 }
+
+type ExpenseSortOption =
+  | "amount_desc"
+  | "amount_asc"
+  | "createdAt_desc"
+  | "createdAt_asc"
+  | "date_desc"
+  | "date_asc"
+  | "description_desc"
+  | "description_asc";
+
+const SORT_SEQUENCE: ExpenseSortOption[] = [
+  "amount_desc",
+  "amount_asc",
+  "createdAt_desc",
+  "createdAt_asc",
+  "date_desc",
+  "date_asc",
+  "description_desc",
+  "description_asc",
+];
+
+const SORT_LABELS: Record<ExpenseSortOption, string> = {
+  amount_desc: "Valor ↓",
+  amount_asc: "Valor ↑",
+  createdAt_desc: "Criacao ↓",
+  createdAt_asc: "Criacao ↑",
+  date_desc: "Data da despesa ↓",
+  date_asc: "Data da despesa ↑",
+  description_desc: "Titulo ↓",
+  description_asc: "Titulo ↑",
+};
 
 async function getTrip(id: string): Promise<Trip | null> {
   if (!ObjectId.isValid(id)) return null;
@@ -155,10 +188,12 @@ function buildTripHref(
   tripId: string,
   mode: string,
   participants: string[],
-  categories: string[]
+  categories: string[],
+  sort: ExpenseSortOption
 ): string {
   const query = new URLSearchParams();
   query.set("mode", mode);
+  query.set("sort", sort);
 
   participants.forEach((participant) => {
     query.append("participant", participant);
@@ -169,6 +204,76 @@ function buildTripHref(
   });
 
   return `/trips/${tripId}?${query.toString()}`;
+}
+
+function parseSortOption(value?: string | string[]): ExpenseSortOption {
+  const candidate = toParamArray(value)[0];
+  if (!candidate) {
+    return "amount_desc";
+  }
+
+  if (SORT_SEQUENCE.includes(candidate as ExpenseSortOption)) {
+    return candidate as ExpenseSortOption;
+  }
+
+  return "amount_desc";
+}
+
+function nextSortOption(current: ExpenseSortOption): ExpenseSortOption {
+  const index = SORT_SEQUENCE.indexOf(current);
+  const nextIndex = (index + 1) % SORT_SEQUENCE.length;
+  return SORT_SEQUENCE[nextIndex];
+}
+
+function toTimeValue(value: Date | string | undefined): number {
+  if (!value) {
+    return 0;
+  }
+
+  const parsed = new Date(value).getTime();
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function sortExpenses(expenses: Expense[], sort: ExpenseSortOption): Expense[] {
+  const sorted = [...expenses];
+
+  sorted.sort((a, b) => {
+    if (sort === "amount_asc") {
+      return a.amount - b.amount;
+    }
+
+    if (sort === "amount_desc") {
+      return b.amount - a.amount;
+    }
+
+    if (sort === "createdAt_asc") {
+      return toTimeValue(a.createdAt) - toTimeValue(b.createdAt);
+    }
+
+    if (sort === "createdAt_desc") {
+      return toTimeValue(b.createdAt) - toTimeValue(a.createdAt);
+    }
+
+    if (sort === "date_asc") {
+      return toTimeValue(a.date) - toTimeValue(b.date);
+    }
+
+    if (sort === "date_desc") {
+      return toTimeValue(b.date) - toTimeValue(a.date);
+    }
+
+    if (sort === "description_asc") {
+      return a.description.localeCompare(b.description, "pt-BR", {
+        sensitivity: "base",
+      });
+    }
+
+    return b.description.localeCompare(a.description, "pt-BR", {
+      sensitivity: "base",
+    });
+  });
+
+  return sorted;
 }
 
 function computeSettlements(
@@ -279,9 +384,11 @@ function computePairwiseSettlements(
 
 export default async function TripPage({ params, searchParams }: PageProps) {
   const { id } = await params;
-  const { mode, participant, category } = await searchParams;
+  const { mode, participant, category, sort } = await searchParams;
   const balanceMode =
     mode === "pairwise" || mode === "compare" ? mode : "global";
+  const sortOption = parseSortOption(sort);
+  const nextSort = nextSortOption(sortOption);
   const [trip, expenses] = await Promise.all([getTrip(id), getExpenses(id)]);
 
   if (!trip) notFound();
@@ -329,6 +436,7 @@ export default async function TripPage({ params, searchParams }: PageProps) {
 
     return participantMatch && categoryMatch;
   });
+  const sortedFilteredExpenses = sortExpenses(filteredExpenses, sortOption);
 
   const totalAmount = filteredExpenses.reduce((sum, e) => sum + e.amount, 0);
 
@@ -377,9 +485,27 @@ export default async function TripPage({ params, searchParams }: PageProps) {
               Expenses
             </h2>
             <div className="flex items-center gap-2">
+              <Link
+                href={buildTripHref(
+                  id,
+                  balanceMode,
+                  participantFilters,
+                  categoryFilters,
+                  nextSort
+                )}
+                className="rounded-full border border-zinc-300 dark:border-zinc-600 px-3 py-1.5 text-xs font-medium text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors"
+              >
+                Sort: {SORT_LABELS[sortOption]}
+              </Link>
               {hasActiveFilters && (
                 <Link
-                  href={buildTripHref(id, balanceMode, [], [])}
+                  href={buildTripHref(
+                    id,
+                    balanceMode,
+                    [],
+                    [],
+                    sortOption
+                  )}
                   className="rounded-full border border-zinc-300 dark:border-zinc-600 px-3 py-1.5 text-xs font-medium text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors"
                 >
                   Clear filters
@@ -405,13 +531,13 @@ export default async function TripPage({ params, searchParams }: PageProps) {
             <div className="rounded-xl border border-dashed border-zinc-300 dark:border-zinc-600 p-10 text-center text-zinc-500 dark:text-zinc-400">
               No expenses yet.
             </div>
-          ) : filteredExpenses.length === 0 ? (
+          ) : sortedFilteredExpenses.length === 0 ? (
             <div className="rounded-xl border border-dashed border-zinc-300 dark:border-zinc-600 p-10 text-center text-zinc-500 dark:text-zinc-400">
               No expenses match the active filters.
             </div>
           ) : (
             <ul className="flex flex-col gap-3">
-              {filteredExpenses.map((expense) => (
+              {sortedFilteredExpenses.map((expense) => (
                 <li
                   key={String(expense._id)}
                   className="rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-5 py-4"
@@ -477,7 +603,8 @@ export default async function TripPage({ params, searchParams }: PageProps) {
                       id,
                       balanceMode,
                       toggleFilterValue(participantFilters, p),
-                      categoryFilters
+                      categoryFilters,
+                      sortOption
                     )}
                     className={`inline-flex rounded-full px-3 py-1 text-xs font-medium transition-colors ${
                       participantFilterSet.has(p)
@@ -511,7 +638,8 @@ export default async function TripPage({ params, searchParams }: PageProps) {
                         id,
                         balanceMode,
                         participantFilters,
-                        toggleFilterValue(categoryFilters, entry.name)
+                        toggleFilterValue(categoryFilters, entry.name),
+                        sortOption
                       )}
                       className={`inline-flex rounded-full px-3 py-1 text-xs font-medium transition-colors ${
                         categoryFilterSet.has(entry.name)
@@ -529,7 +657,7 @@ export default async function TripPage({ params, searchParams }: PageProps) {
             {hasActiveFilters && (
               <div className="mt-4 pt-4 border-t border-zinc-200 dark:border-zinc-700">
                 <Link
-                  href={buildTripHref(id, balanceMode, [], [])}
+                  href={buildTripHref(id, balanceMode, [], [], sortOption)}
                   className="text-xs font-medium text-zinc-600 dark:text-zinc-300 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors"
                 >
                   Clear all filters
@@ -549,7 +677,8 @@ export default async function TripPage({ params, searchParams }: PageProps) {
                   id,
                   "global",
                   participantFilters,
-                  categoryFilters
+                  categoryFilters,
+                  sortOption
                 )}
                 className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
                   balanceMode === "global"
@@ -564,7 +693,8 @@ export default async function TripPage({ params, searchParams }: PageProps) {
                   id,
                   "pairwise",
                   participantFilters,
-                  categoryFilters
+                  categoryFilters,
+                  sortOption
                 )}
                 className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
                   balanceMode === "pairwise"
@@ -579,7 +709,8 @@ export default async function TripPage({ params, searchParams }: PageProps) {
                   id,
                   "compare",
                   participantFilters,
-                  categoryFilters
+                  categoryFilters,
+                  sortOption
                 )}
                 className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
                   balanceMode === "compare"
