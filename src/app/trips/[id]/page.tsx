@@ -2,12 +2,17 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ObjectId } from "mongodb";
 import { getDb } from "@/lib/mongodb";
+import { formatCurrencyBRL } from "@/lib/currency";
 import { Trip, Expense, ExpenseSplitShare } from "@/types";
 import ExpenseCharts, { ChartEntry } from "@/components/expense-charts";
 
 interface PageProps {
   params: Promise<{ id: string }>;
-  searchParams: Promise<{ mode?: string }>;
+  searchParams: Promise<{
+    mode?: string;
+    participant?: string | string[];
+    category?: string | string[];
+  }>;
 }
 
 async function getTrip(id: string): Promise<Trip | null> {
@@ -112,9 +117,58 @@ function formatSplitSummary(expense: Expense): string {
 
   return normalized.shares
     .map(
-      (share) => `${share.participant} ${expense.currency} ${(share.cents / 100).toFixed(2)}`
+      (share) => `${share.participant} ${formatCurrencyBRL(share.cents / 100)}`
     )
     .join(", ");
+}
+
+function normalizeCategory(category?: string): string {
+  const trimmed = category?.trim();
+  if (!trimmed) {
+    return "Sem categoria";
+  }
+
+  return trimmed;
+}
+
+function toParamArray(value?: string | string[]): string[] {
+  if (!value) {
+    return [];
+  }
+
+  if (Array.isArray(value)) {
+    return value;
+  }
+
+  return [value];
+}
+
+function toggleFilterValue(values: string[], value: string): string[] {
+  if (values.includes(value)) {
+    return values.filter((item) => item !== value);
+  }
+
+  return [...values, value];
+}
+
+function buildTripHref(
+  tripId: string,
+  mode: string,
+  participants: string[],
+  categories: string[]
+): string {
+  const query = new URLSearchParams();
+  query.set("mode", mode);
+
+  participants.forEach((participant) => {
+    query.append("participant", participant);
+  });
+
+  categories.forEach((category) => {
+    query.append("category", category);
+  });
+
+  return `/trips/${tripId}?${query.toString()}`;
 }
 
 function computeSettlements(
@@ -225,7 +279,7 @@ function computePairwiseSettlements(
 
 export default async function TripPage({ params, searchParams }: PageProps) {
   const { id } = await params;
-  const { mode } = await searchParams;
+  const { mode, participant, category } = await searchParams;
   const balanceMode =
     mode === "pairwise" || mode === "compare" ? mode : "global";
   const [trip, expenses] = await Promise.all([getTrip(id), getExpenses(id)]);
@@ -237,16 +291,55 @@ export default async function TripPage({ params, searchParams }: PageProps) {
     expenses,
     trip.participants
   );
-  const totalAmount = expenses.reduce((sum, e) => sum + e.amount, 0);
+  const participantFilters = toParamArray(participant)
+    .map((name) => name.trim())
+    .filter((name) => name.length > 0)
+    .filter((name) => trip.participants.includes(name));
+  const participantFilterSet = new Set(participantFilters);
+
+  const categoryOptionsMap = new Map<string, number>();
+  for (const expense of expenses) {
+    const normalizedCategory = normalizeCategory(expense.category);
+    categoryOptionsMap.set(
+      normalizedCategory,
+      (categoryOptionsMap.get(normalizedCategory) ?? 0) + expense.amount
+    );
+  }
+
+  const categoryOptions = Array.from(categoryOptionsMap.entries())
+    .map(([name, total]) => ({ name, total }))
+    .sort((a, b) => b.total - a.total);
+  const validCategoryNames = new Set(categoryOptions.map((item) => item.name));
+
+  const categoryFilters = toParamArray(category)
+    .map((name) => name.trim())
+    .filter((name) => name.length > 0)
+    .filter((name) => validCategoryNames.has(name));
+  const categoryFilterSet = new Set(categoryFilters);
+
+  const hasActiveFilters =
+    participantFilters.length > 0 || categoryFilters.length > 0;
+
+  const filteredExpenses = expenses.filter((expense) => {
+    const participantMatch =
+      participantFilterSet.size === 0 || participantFilterSet.has(expense.paidBy);
+    const categoryMatch =
+      categoryFilterSet.size === 0 ||
+      categoryFilterSet.has(normalizeCategory(expense.category));
+
+    return participantMatch && categoryMatch;
+  });
+
+  const totalAmount = filteredExpenses.reduce((sum, e) => sum + e.amount, 0);
 
   const byParticipantMap = new Map<string, number>();
   const byCategoryMap = new Map<string, number>();
-  for (const expense of expenses) {
+  for (const expense of filteredExpenses) {
     byParticipantMap.set(
       expense.paidBy,
       (byParticipantMap.get(expense.paidBy) ?? 0) + expense.amount
     );
-    const cat = expense.category?.trim() || "Sem categoria";
+    const cat = normalizeCategory(expense.category);
     byCategoryMap.set(cat, (byCategoryMap.get(cat) ?? 0) + expense.amount);
   }
   const byParticipant: ChartEntry[] = Array.from(byParticipantMap.entries())
@@ -283,15 +376,25 @@ export default async function TripPage({ params, searchParams }: PageProps) {
             <h2 className="text-xl font-semibold text-zinc-800 dark:text-zinc-100">
               Expenses
             </h2>
-            <Link
-              href={`/trips/${id}/expenses/new`}
-              className="rounded-full bg-zinc-900 dark:bg-zinc-50 text-white dark:text-zinc-900 px-4 py-1.5 text-sm font-medium hover:bg-zinc-700 dark:hover:bg-zinc-200 transition-colors"
-            >
-              + Add Expense
-            </Link>
+            <div className="flex items-center gap-2">
+              {hasActiveFilters && (
+                <Link
+                  href={buildTripHref(id, balanceMode, [], [])}
+                  className="rounded-full border border-zinc-300 dark:border-zinc-600 px-3 py-1.5 text-xs font-medium text-zinc-600 dark:text-zinc-300 hover:bg-zinc-100 dark:hover:bg-zinc-700 transition-colors"
+                >
+                  Clear filters
+                </Link>
+              )}
+              <Link
+                href={`/trips/${id}/expenses/new`}
+                className="rounded-full bg-zinc-900 dark:bg-zinc-50 text-white dark:text-zinc-900 px-4 py-1.5 text-sm font-medium hover:bg-zinc-700 dark:hover:bg-zinc-200 transition-colors"
+              >
+                + Add Expense
+              </Link>
+            </div>
           </div>
 
-          {expenses.length > 0 && (
+          {filteredExpenses.length > 0 && (
             <ExpenseCharts
               byParticipant={byParticipant}
               byCategory={byCategory}
@@ -302,9 +405,13 @@ export default async function TripPage({ params, searchParams }: PageProps) {
             <div className="rounded-xl border border-dashed border-zinc-300 dark:border-zinc-600 p-10 text-center text-zinc-500 dark:text-zinc-400">
               No expenses yet.
             </div>
+          ) : filteredExpenses.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-zinc-300 dark:border-zinc-600 p-10 text-center text-zinc-500 dark:text-zinc-400">
+              No expenses match the active filters.
+            </div>
           ) : (
             <ul className="flex flex-col gap-3">
-              {expenses.map((expense) => (
+              {filteredExpenses.map((expense) => (
                 <li
                   key={String(expense._id)}
                   className="rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 px-5 py-4"
@@ -315,7 +422,7 @@ export default async function TripPage({ params, searchParams }: PageProps) {
                     </span>
                     <div className="flex items-center gap-3">
                       <span className="font-semibold text-zinc-800 dark:text-zinc-100">
-                        {expense.currency} {expense.amount.toFixed(2)}
+                        {formatCurrencyBRL(expense.amount)}
                       </span>
                       <Link
                         href={`/trips/${id}/expenses/${String(expense._id)}/edit`}
@@ -346,10 +453,9 @@ export default async function TripPage({ params, searchParams }: PageProps) {
             </ul>
           )}
 
-          {expenses.length > 0 && (
+          {filteredExpenses.length > 0 && (
             <p className="mt-4 text-right text-sm text-zinc-500 dark:text-zinc-400">
-              Total: {expenses[0]?.currency ?? ""}{" "}
-              <strong>{totalAmount.toFixed(2)}</strong>
+              Total: <strong>{formatCurrencyBRL(totalAmount)}</strong>
             </p>
           )}
         </section>
@@ -361,16 +467,75 @@ export default async function TripPage({ params, searchParams }: PageProps) {
             <h3 className="font-semibold text-zinc-800 dark:text-zinc-100 mb-3">
               Participants
             </h3>
-            <ul className="flex flex-col gap-1">
+            <ul className="flex flex-wrap gap-2">
               {trip.participants.map((p) => (
                 <li
                   key={p}
-                  className="text-sm text-zinc-700 dark:text-zinc-300"
                 >
-                  {p}
+                  <Link
+                    href={buildTripHref(
+                      id,
+                      balanceMode,
+                      toggleFilterValue(participantFilters, p),
+                      categoryFilters
+                    )}
+                    className={`inline-flex rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                      participantFilterSet.has(p)
+                        ? "bg-zinc-900 text-white dark:bg-zinc-50 dark:text-zinc-900"
+                        : "bg-zinc-100 text-zinc-600 dark:bg-zinc-700 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-600"
+                    }`}
+                  >
+                    {p}
+                  </Link>
                 </li>
               ))}
             </ul>
+          </div>
+
+          {/* Categories */}
+          <div className="rounded-xl border border-zinc-200 dark:border-zinc-700 bg-white dark:bg-zinc-800 p-5">
+            <h3 className="font-semibold text-zinc-800 dark:text-zinc-100 mb-3">
+              Categories
+            </h3>
+
+            {categoryOptions.length === 0 ? (
+              <p className="text-sm text-zinc-500 dark:text-zinc-400">
+                No categories yet.
+              </p>
+            ) : (
+              <ul className="flex flex-wrap gap-2">
+                {categoryOptions.map((entry) => (
+                  <li key={entry.name}>
+                    <Link
+                      href={buildTripHref(
+                        id,
+                        balanceMode,
+                        participantFilters,
+                        toggleFilterValue(categoryFilters, entry.name)
+                      )}
+                      className={`inline-flex rounded-full px-3 py-1 text-xs font-medium transition-colors ${
+                        categoryFilterSet.has(entry.name)
+                          ? "bg-zinc-900 text-white dark:bg-zinc-50 dark:text-zinc-900"
+                          : "bg-zinc-100 text-zinc-600 dark:bg-zinc-700 dark:text-zinc-300 hover:bg-zinc-200 dark:hover:bg-zinc-600"
+                      }`}
+                    >
+                      {entry.name}
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            )}
+
+            {hasActiveFilters && (
+              <div className="mt-4 pt-4 border-t border-zinc-200 dark:border-zinc-700">
+                <Link
+                  href={buildTripHref(id, balanceMode, [], [])}
+                  className="text-xs font-medium text-zinc-600 dark:text-zinc-300 hover:text-zinc-900 dark:hover:text-zinc-100 transition-colors"
+                >
+                  Clear all filters
+                </Link>
+              </div>
+            )}
           </div>
 
           {/* Balances */}
@@ -380,7 +545,12 @@ export default async function TripPage({ params, searchParams }: PageProps) {
             </h3>
             <div className="mb-4 flex flex-wrap gap-2">
               <Link
-                href={`/trips/${id}?mode=global`}
+                href={buildTripHref(
+                  id,
+                  "global",
+                  participantFilters,
+                  categoryFilters
+                )}
                 className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
                   balanceMode === "global"
                     ? "bg-zinc-900 text-white dark:bg-zinc-50 dark:text-zinc-900"
@@ -390,7 +560,12 @@ export default async function TripPage({ params, searchParams }: PageProps) {
                 Global Simplified
               </Link>
               <Link
-                href={`/trips/${id}?mode=pairwise`}
+                href={buildTripHref(
+                  id,
+                  "pairwise",
+                  participantFilters,
+                  categoryFilters
+                )}
                 className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
                   balanceMode === "pairwise"
                     ? "bg-zinc-900 text-white dark:bg-zinc-50 dark:text-zinc-900"
@@ -400,7 +575,12 @@ export default async function TripPage({ params, searchParams }: PageProps) {
                 Pair-wise Netting
               </Link>
               <Link
-                href={`/trips/${id}?mode=compare`}
+                href={buildTripHref(
+                  id,
+                  "compare",
+                  participantFilters,
+                  categoryFilters
+                )}
                 className={`rounded-full px-3 py-1 text-xs font-medium transition-colors ${
                   balanceMode === "compare"
                     ? "bg-zinc-900 text-white dark:bg-zinc-50 dark:text-zinc-900"
@@ -429,7 +609,7 @@ export default async function TripPage({ params, searchParams }: PageProps) {
                     >
                       <strong>{settlement.from}</strong> owes{" "}
                       <strong>{settlement.to}</strong>{" "}
-                      {expenses[0]?.currency ?? ""} {settlement.amount.toFixed(2)}
+                      {formatCurrencyBRL(settlement.amount)}
                     </li>
                   ))}
                 </ul>
@@ -448,7 +628,7 @@ export default async function TripPage({ params, searchParams }: PageProps) {
                     >
                       <strong>{settlement.from}</strong> owes{" "}
                       <strong>{settlement.to}</strong>{" "}
-                      {expenses[0]?.currency ?? ""} {settlement.amount.toFixed(2)}
+                      {formatCurrencyBRL(settlement.amount)}
                     </li>
                   ))}
                 </ul>
@@ -472,7 +652,7 @@ export default async function TripPage({ params, searchParams }: PageProps) {
                         >
                           <strong>{settlement.from}</strong> owes{" "}
                           <strong>{settlement.to}</strong>{" "}
-                          {expenses[0]?.currency ?? ""} {settlement.amount.toFixed(2)}
+                          {formatCurrencyBRL(settlement.amount)}
                         </li>
                       ))}
                     </ul>
@@ -496,7 +676,7 @@ export default async function TripPage({ params, searchParams }: PageProps) {
                         >
                           <strong>{settlement.from}</strong> owes{" "}
                           <strong>{settlement.to}</strong>{" "}
-                          {expenses[0]?.currency ?? ""} {settlement.amount.toFixed(2)}
+                          {formatCurrencyBRL(settlement.amount)}
                         </li>
                       ))}
                     </ul>

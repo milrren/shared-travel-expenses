@@ -2,8 +2,9 @@
 
 import { useState } from "react";
 import type { ExpenseSplitShare } from "@/types";
+import { formatCurrencyBRL } from "@/lib/currency";
 
-const CURRENCY_OPTIONS = ["BRL", "EUR", "USD", "GBP", "CHF", "JPY", "AUD", "CAD"];
+const DEFAULT_CURRENCY = "BRL";
 
 type SplitMode = "equal" | "custom";
 
@@ -65,7 +66,6 @@ export function ExpenseForm({
   const [amount, setAmount] = useState(
     initialValues?.amount !== undefined ? String(initialValues.amount) : ""
   );
-  const [currency, setCurrency] = useState(initialValues?.currency ?? "BRL");
   const [paidBy, setPaidBy] = useState(initialValues?.paidBy ?? participants[0] ?? "");
   const [splitMode, setSplitMode] = useState<SplitMode>(
     initialUsesCustomSplit ? "custom" : "equal"
@@ -99,7 +99,11 @@ export function ExpenseForm({
     const totalCents = Number.isFinite(totalAmount) ? toCents(totalAmount) : 0;
     const remainingCents = totalCents - assignedCents;
 
-    return `Assigned ${currency} ${(assignedCents / 100).toFixed(2)} of ${currency} ${(totalCents / 100).toFixed(2)} (${remainingCents === 0 ? "balanced" : `${remainingCents > 0 ? "remaining" : "excess"} ${currency} ${(Math.abs(remainingCents) / 100).toFixed(2)}`})`;
+    const assignedLabel = formatCurrencyBRL(assignedCents / 100);
+    const totalLabel = formatCurrencyBRL(totalCents / 100);
+    const remainingLabel = formatCurrencyBRL(Math.abs(remainingCents) / 100);
+
+    return `Assigned ${assignedLabel} of ${totalLabel} (${remainingCents === 0 ? "balanced" : `${remainingCents > 0 ? "remaining" : "excess"} ${remainingLabel}`})`;
   }
 
   function handleSplitModeChange(mode: SplitMode) {
@@ -183,7 +187,7 @@ export function ExpenseForm({
       const submissionError = await onSubmit({
         description,
         amount: parsedAmount,
-        currency,
+        currency: DEFAULT_CURRENCY,
         paidBy,
         splitAmong: splitPayload,
         date,
@@ -240,19 +244,11 @@ export function ExpenseForm({
         </label>
         <label className="flex flex-col gap-1">
           <span className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
-            Currency *
+            Currency
           </span>
-          <select
-            value={currency}
-            onChange={(e) => setCurrency(e.target.value)}
-            className="rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 px-3 py-2 text-sm text-zinc-900 dark:text-zinc-50 focus:outline-none focus:ring-2 focus:ring-zinc-500"
-          >
-            {CURRENCY_OPTIONS.map((currencyOption) => (
-              <option key={currencyOption} value={currencyOption}>
-                {currencyOption}
-              </option>
-            ))}
-          </select>
+          <div className="rounded-lg border border-zinc-300 dark:border-zinc-600 bg-zinc-100 dark:bg-zinc-700/60 px-3 py-2 text-sm text-zinc-700 dark:text-zinc-200">
+            R$
+          </div>
         </label>
       </div>
 
