@@ -18,7 +18,7 @@ export default function NewExpensePage() {
   const [trip, setTrip] = useState<Trip | null>(null);
   const [description, setDescription] = useState("");
   const [amount, setAmount] = useState("");
-  const [currency, setCurrency] = useState("EUR");
+  const [currency, setCurrency] = useState("BRL");
   const [paidBy, setPaidBy] = useState("");
   const [splitAmong, setSplitAmong] = useState<string[]>([]);
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
@@ -146,7 +146,7 @@ export default function NewExpensePage() {
                 onChange={(e) => setCurrency(e.target.value)}
                 className="rounded-lg border border-zinc-300 dark:border-zinc-600 bg-white dark:bg-zinc-800 px-3 py-2 text-sm text-zinc-900 dark:text-zinc-50 focus:outline-none focus:ring-2 focus:ring-zinc-500"
               >
-                {["EUR", "USD", "GBP", "CHF", "JPY", "AUD", "CAD"].map((c) => (
+                {["BRL", "EUR", "USD", "GBP", "CHF", "JPY", "AUD", "CAD"].map((c) => (
                   <option key={c} value={c}>{c}</option>
                 ))}
               </select>
