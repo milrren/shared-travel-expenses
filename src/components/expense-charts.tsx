@@ -90,11 +90,21 @@ function HorizontalBarChart({ data }: { data: ChartEntry[] }) {
 }
 
 export default function ExpenseCharts({ byParticipant, byCategory }: Props) {
+  const totalSpending = byParticipant.reduce((sum, entry) => sum + entry.total, 0);
+
   return (
     <div className="mb-6 rounded-xl border border-zinc-200 bg-white p-5 dark:border-zinc-700 dark:bg-zinc-800">
-      <h3 className="mb-4 text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
-        Spending overview
-      </h3>
+      <div className="mb-4 flex items-center justify-between">
+        <h3 className="text-sm font-semibold uppercase tracking-wide text-zinc-500 dark:text-zinc-400">
+          Spending overview
+        </h3>
+        <div className="text-right">
+          <p className="text-xs font-medium text-zinc-600 dark:text-zinc-300">Total</p>
+          <p className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">
+            {formatCurrencyBRL(totalSpending)}
+          </p>
+        </div>
+      </div>
       <div className="grid gap-6 sm:grid-cols-2">
         <div>
           <p className="mb-2 text-xs font-medium text-zinc-600 dark:text-zinc-300">
