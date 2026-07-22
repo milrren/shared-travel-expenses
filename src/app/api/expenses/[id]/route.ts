@@ -1,7 +1,26 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ObjectId } from "mongodb";
 import { getDb } from "@/lib/mongodb";
-import { Expense, Trip } from "@/types";
+import { Expense, ExpenseSplitShare, Trip } from "@/types";
+
+function isSplitShare(value: unknown): value is ExpenseSplitShare {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.participant === "string" &&
+    candidate.participant.trim().length > 0 &&
+    typeof candidate.amount === "number" &&
+    Number.isFinite(candidate.amount) &&
+    candidate.amount > 0
+  );
+}
+
+function toCents(amount: number): number {
+  return Math.round(amount * 100);
+}
 
 interface Params {
   params: Promise<{ id: string }>;
@@ -74,10 +93,7 @@ export async function PUT(request: NextRequest, { params }: Params) {
       );
     }
 
-    if (
-      splitAmong !== undefined &&
-      (!Array.isArray(splitAmong) || splitAmong.length === 0)
-    ) {
+    if (splitAmong !== undefined && (!Array.isArray(splitAmong) || splitAmong.length === 0)) {
       return NextResponse.json(
         { error: "splitAmong must contain at least one participant" },
         { status: 400 }
@@ -122,14 +138,65 @@ export async function PUT(request: NextRequest, { params }: Params) {
       );
     }
 
-    if (
-      splitAmong !== undefined &&
-      splitAmong.some((participant: string) => !trip.participants.includes(participant))
-    ) {
+    const effectiveAmount = amount ?? existingExpense.amount;
+    const effectiveSplitAmong = splitAmong ?? existingExpense.splitAmong;
+
+    if (!Array.isArray(effectiveSplitAmong) || effectiveSplitAmong.length === 0) {
       return NextResponse.json(
-        { error: "splitAmong contains participant(s) outside this trip" },
+        { error: "splitAmong must contain at least one participant" },
         { status: 400 }
       );
+    }
+
+    const usingCustomSplit = effectiveSplitAmong.every((value: unknown) => isSplitShare(value));
+    const usingLegacySplit = effectiveSplitAmong.every((value: unknown) => typeof value === "string");
+
+    if (!usingCustomSplit && !usingLegacySplit) {
+      return NextResponse.json(
+        {
+          error:
+            "splitAmong must be either an array of participant names or an array of { participant, amount }",
+        },
+        { status: 400 }
+      );
+    }
+
+    if (usingLegacySplit) {
+      const participants = (effectiveSplitAmong as string[]).map((participant) => participant.trim());
+
+      if (participants.some((participant) => participant.length === 0)) {
+        return NextResponse.json(
+          { error: "splitAmong must contain non-empty participant names" },
+          { status: 400 }
+        );
+      }
+
+      if (participants.some((participant) => !trip.participants.includes(participant))) {
+        return NextResponse.json(
+          { error: "splitAmong contains participant(s) outside this trip" },
+          { status: 400 }
+        );
+      }
+    }
+
+    if (usingCustomSplit) {
+      const shares = effectiveSplitAmong as ExpenseSplitShare[];
+
+      if (shares.some((share) => !trip.participants.includes(share.participant))) {
+        return NextResponse.json(
+          { error: "splitAmong contains participant(s) outside this trip" },
+          { status: 400 }
+        );
+      }
+
+      const sumCents = shares.reduce((sum, share) => sum + toCents(share.amount), 0);
+      const totalCents = toCents(effectiveAmount);
+      if (sumCents !== totalCents) {
+        return NextResponse.json(
+          { error: "sum of split amounts must match total expense amount" },
+          { status: 400 }
+        );
+      }
     }
 
     const result = await db.collection<Expense>("expenses").findOneAndUpdate(

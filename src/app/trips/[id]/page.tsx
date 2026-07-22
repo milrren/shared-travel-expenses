@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ObjectId } from "mongodb";
 import { getDb } from "@/lib/mongodb";
-import { Trip, Expense } from "@/types";
+import { Trip, Expense, ExpenseSplitShare } from "@/types";
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -31,8 +31,89 @@ interface Settlement {
   amount: number;
 }
 
+interface NormalizedSplitShare {
+  participant: string;
+  cents: number;
+}
+
 function toCents(amount: number): number {
   return Math.round(amount * 100);
+}
+
+function isSplitShare(value: unknown): value is ExpenseSplitShare {
+  if (typeof value !== "object" || value === null) {
+    return false;
+  }
+
+  const candidate = value as Record<string, unknown>;
+  return (
+    typeof candidate.participant === "string" &&
+    candidate.participant.trim().length > 0 &&
+    typeof candidate.amount === "number" &&
+    Number.isFinite(candidate.amount) &&
+    candidate.amount > 0
+  );
+}
+
+function normalizeSplitShares(expense: Expense): {
+  shares: NormalizedSplitShare[];
+  isCustom: boolean;
+} {
+  const splitAmong = expense.splitAmong;
+
+  if (!Array.isArray(splitAmong) || splitAmong.length === 0) {
+    return { shares: [], isCustom: false };
+  }
+
+  if (splitAmong.every((value) => typeof value === "string")) {
+    const participants = splitAmong as string[];
+    const totalCents = toCents(expense.amount);
+    const splitCount = participants.length;
+    const baseShare = Math.floor(totalCents / splitCount);
+    const remainder = totalCents - baseShare * splitCount;
+
+    const shares = participants.map((participant, index) => ({
+      participant,
+      cents: baseShare + (index < remainder ? 1 : 0),
+    }));
+
+    return { shares, isCustom: false };
+  }
+
+  if (splitAmong.every((value) => isSplitShare(value))) {
+    const totalCents = toCents(expense.amount);
+    const shares = (splitAmong as ExpenseSplitShare[]).map((share) => ({
+      participant: share.participant,
+      cents: toCents(share.amount),
+    }));
+
+    const assignedCents = shares.reduce((sum, share) => sum + share.cents, 0);
+    const delta = totalCents - assignedCents;
+    if (shares.length > 0 && delta !== 0) {
+      shares[0] = { ...shares[0], cents: shares[0].cents + delta };
+    }
+
+    return { shares, isCustom: true };
+  }
+
+  return { shares: [], isCustom: false };
+}
+
+function formatSplitSummary(expense: Expense): string {
+  const normalized = normalizeSplitShares(expense);
+  if (normalized.shares.length === 0) {
+    return "No participants";
+  }
+
+  if (!normalized.isCustom) {
+    return normalized.shares.map((share) => share.participant).join(", ");
+  }
+
+  return normalized.shares
+    .map(
+      (share) => `${share.participant} ${expense.currency} ${(share.cents / 100).toFixed(2)}`
+    )
+    .join(", ");
 }
 
 function computeSettlements(
@@ -52,19 +133,14 @@ function computeSettlements(
   };
 
   for (const expense of expenses) {
-    if (expense.splitAmong.length === 0) continue;
+    const { shares } = normalizeSplitShares(expense);
+    if (shares.length === 0) continue;
 
     const totalCents = toCents(expense.amount);
-    const splitCount = expense.splitAmong.length;
-    const baseShare = Math.floor(totalCents / splitCount);
-    const remainder = totalCents - baseShare * splitCount;
-
     addNet(expense.paidBy, totalCents);
 
-    for (let index = 0; index < splitCount; index += 1) {
-      const person = expense.splitAmong[index];
-      const extraCent = index < remainder ? 1 : 0;
-      addNet(person, -(baseShare + extraCent));
+    for (const share of shares) {
+      addNet(share.participant, -share.cents);
     }
   }
 
@@ -118,18 +194,12 @@ function computePairwiseSettlements(
   };
 
   for (const expense of expenses) {
-    if (expense.splitAmong.length === 0) continue;
+    const { shares } = normalizeSplitShares(expense);
+    if (shares.length === 0) continue;
 
-    const totalCents = toCents(expense.amount);
-    const splitCount = expense.splitAmong.length;
-    const baseShare = Math.floor(totalCents / splitCount);
-    const remainder = totalCents - baseShare * splitCount;
-
-    for (let index = 0; index < splitCount; index += 1) {
-      const person = expense.splitAmong[index];
-      const extraCent = index < remainder ? 1 : 0;
-      if (person === expense.paidBy) continue;
-      addOwe(person, expense.paidBy, baseShare + extraCent);
+    for (const share of shares) {
+      if (share.participant === expense.paidBy) continue;
+      addOwe(share.participant, expense.paidBy, share.cents);
     }
   }
 
@@ -232,13 +302,20 @@ export default async function TripPage({ params, searchParams }: PageProps) {
                   </div>
                   <p className="text-xs text-zinc-500 dark:text-zinc-400 mt-1">
                     Paid by <strong>{expense.paidBy}</strong> · Split among{" "}
-                    {expense.splitAmong.join(", ")} · {expense.date}
+                    {formatSplitSummary(expense)} · {expense.date}
                   </p>
-                  {expense.category && (
-                    <span className="inline-block mt-2 rounded-full bg-zinc-100 dark:bg-zinc-700 px-2 py-0.5 text-xs text-zinc-600 dark:text-zinc-300">
-                      {expense.category}
-                    </span>
-                  )}
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {expense.category && (
+                      <span className="inline-block rounded-full bg-zinc-100 dark:bg-zinc-700 px-2 py-0.5 text-xs text-zinc-600 dark:text-zinc-300">
+                        {expense.category}
+                      </span>
+                    )}
+                    {normalizeSplitShares(expense).isCustom && (
+                      <span className="inline-block rounded-full bg-sky-100 dark:bg-sky-900/40 px-2 py-0.5 text-xs text-sky-700 dark:text-sky-300">
+                        Divisao personalizada
+                      </span>
+                    )}
+                  </div>
                 </li>
               ))}
             </ul>

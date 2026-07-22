@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { ExpenseForm, ExpenseFormPayload } from "@/components/expense-form";
+import type { ExpenseSplitShare } from "@/types";
 
 interface Trip {
   _id: string;
@@ -17,7 +18,7 @@ interface ExpenseResponse {
   amount: number;
   currency: string;
   paidBy: string;
-  splitAmong: string[];
+  splitAmong: string[] | ExpenseSplitShare[];
   date: string;
   category?: string;
 }

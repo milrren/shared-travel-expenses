@@ -11,6 +11,11 @@ export interface Trip {
   updatedAt: Date;
 }
 
+export interface ExpenseSplitShare {
+  participant: string;
+  amount: number;
+}
+
 export interface Expense {
   _id?: ObjectId;
   tripId: ObjectId | string;
@@ -18,7 +23,7 @@ export interface Expense {
   amount: number;
   currency: string;
   paidBy: string;
-  splitAmong: string[];
+  splitAmong: string[] | ExpenseSplitShare[];
   date: string;
   category?: string;
   createdAt: Date;
